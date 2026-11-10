@@ -11,16 +11,20 @@ drill-down sidebar.
 """
 from __future__ import annotations
 
-from typing import Optional
+from typing import Iterable, Optional
 
 from . import ai
 from .db import get_conn
 
 SORTS = {
-    "newest": "a.created_at DESC",
-    "oldest": "a.created_at ASC",
-    "name": "a.title ASC",
-    "largest": "a.size DESC",
+    "newest": "a.created_at DESC, a.id DESC",
+    "created_at_desc": "a.created_at DESC, a.id DESC",
+    "desc": "a.created_at DESC, a.id DESC",
+    "oldest": "a.created_at ASC, a.id ASC",
+    "created_at_asc": "a.created_at ASC, a.id ASC",
+    "asc": "a.created_at ASC, a.id ASC",
+    "name": "a.title ASC, a.id ASC",
+    "largest": "a.size DESC, a.id DESC",
 }
 
 
@@ -30,11 +34,124 @@ def _fts_query(q: str) -> str:
     return " ".join(f'"{t}"*' for t in terms)
 
 
+def _normalize_tags(*sources: Optional[Iterable[str] | str]) -> list[str]:
+    """Normalize tag inputs: split commas, strip, lowercase, drop blanks, deduplicate."""
+    out: list[str] = []
+    seen: set[str] = set()
+    for src in sources:
+        if not src:
+            continue
+        items = [src] if isinstance(src, str) else src
+        for raw in items:
+            if not raw:
+                continue
+            for part in str(raw).split(","):
+                name = part.strip().lower()
+                if name and name not in seen:
+                    seen.add(name)
+                    out.append(name)
+    return out
+
+
+def _build_query(
+    *,
+    q: str = "",
+    media_type: Optional[str] = None,
+    tag: Optional[str] = None,
+    include_tags: Optional[Iterable[str] | str] = None,
+    exclude_tags: Optional[Iterable[str] | str] = None,
+    collection_id: Optional[int] = None,
+    status: str = "active",
+    sort: str = "newest",
+) -> tuple[str, str, list, str, bool]:
+    """Build shared SQL fragments for asset search and export.
+
+    Returns (join_sql, where_sql, params, order_sql, is_empty).
+    """
+    order = SORTS.get(sort, SORTS["newest"])
+    inc_tags = _normalize_tags(tag, include_tags)
+    exc_tags = _normalize_tags(exclude_tags)
+
+    if set(inc_tags) & set(exc_tags):
+        return "", "1 = 0", [], order, True
+
+    where = ["a.status = ?"]
+    params: list = [status]
+    join = ""
+
+    if q and q.strip():
+        fts_q = _fts_query(q)
+        if not fts_q:
+            return "", "1 = 0", [], order, True
+        join += " JOIN asset_fts f ON f.rowid = a.id"
+        where.append("asset_fts MATCH ?")
+        params.append(fts_q)
+
+    if media_type and media_type.strip():
+        where.append("a.media_type = ?")
+        params.append(media_type.strip())
+
+    if collection_id is not None:
+        try:
+            cid = int(collection_id)
+        except (TypeError, ValueError):
+            return "", "1 = 0", [], order, True
+        join += " JOIN collection_assets ca ON ca.asset_id = a.id AND ca.collection_id = ?"
+        params.append(cid)
+
+    if inc_tags:
+        placeholders = ",".join("?" for _ in inc_tags)
+        where.append(
+            f"""a.id IN (
+                SELECT at.asset_id FROM asset_tags at
+                JOIN tags t ON t.id = at.tag_id
+                WHERE t.name IN ({placeholders})
+                GROUP BY at.asset_id
+                HAVING COUNT(DISTINCT t.name) = ?
+            )"""
+        )
+        params.extend(inc_tags)
+        params.append(len(inc_tags))
+
+    if exc_tags:
+        placeholders = ",".join("?" for _ in exc_tags)
+        where.append(
+            f"""NOT EXISTS (
+                SELECT 1 FROM asset_tags at
+                JOIN tags t ON t.id = at.tag_id
+                WHERE at.asset_id = a.id AND t.name IN ({placeholders})
+            )"""
+        )
+        params.extend(exc_tags)
+
+    return join, " AND ".join(where), params, order, False
+
+
+def _tags_by_asset_ids(conn, asset_ids: list[int]) -> dict[int, list[str]]:
+    if not asset_ids:
+        return {}
+    placeholders = ",".join("?" for _ in asset_ids)
+    rows = conn.execute(
+        f"""SELECT at.asset_id, t.name
+            FROM asset_tags at
+            JOIN tags t ON t.id = at.tag_id
+            WHERE at.asset_id IN ({placeholders})
+            ORDER BY t.name ASC""",
+        asset_ids,
+    ).fetchall()
+    out: dict[int, list[str]] = {aid: [] for aid in asset_ids}
+    for r in rows:
+        out.setdefault(r["asset_id"], []).append(r["name"])
+    return out
+
+
 def search(
     *,
     q: str = "",
     media_type: Optional[str] = None,
     tag: Optional[str] = None,
+    include_tags: Optional[Iterable[str] | str] = None,
+    exclude_tags: Optional[Iterable[str] | str] = None,
     collection_id: Optional[int] = None,
     status: str = "active",
     sort: str = "newest",
@@ -44,31 +161,39 @@ def search(
 ) -> dict:
     conn = get_conn()
 
+    try:
+        limit = int(limit)
+    except (TypeError, ValueError):
+        limit = 60
+    try:
+        offset = int(offset)
+    except (TypeError, ValueError):
+        offset = 0
+    limit = max(1, min(limit, 200))
+    offset = max(0, offset)
+
     # Semantic mode ranks the candidate pool by embedding similarity.
-    if mode == "semantic" and q.strip():
+    if mode == "semantic" and q and q.strip():
         return _semantic_search(q, media_type, status, limit, offset)
 
-    where = ["a.status = ?"]
-    params: list = [status]
-    join = ""
+    join, where_sql, params, order, is_empty = _build_query(
+        q=q,
+        media_type=media_type,
+        tag=tag,
+        include_tags=include_tags,
+        exclude_tags=exclude_tags,
+        collection_id=collection_id,
+        status=status,
+        sort=sort,
+    )
 
-    if q.strip():
-        join += " JOIN asset_fts f ON f.rowid = a.id"
-        where.append("asset_fts MATCH ?")
-        params.append(_fts_query(q))
-    if media_type:
-        where.append("a.media_type = ?")
-        params.append(media_type)
-    if tag:
-        join += (" JOIN asset_tags at ON at.asset_id = a.id"
-                 " JOIN tags t ON t.id = at.tag_id AND t.name = ?")
-        params.append(tag.lower())
-    if collection_id:
-        join += " JOIN collection_assets ca ON ca.asset_id = a.id AND ca.collection_id = ?"
-        params.append(collection_id)
-
-    where_sql = " AND ".join(where)
-    order = "bm25(asset_fts)" if q.strip() else SORTS.get(sort, SORTS["newest"])
+    if is_empty:
+        return {
+            "total": 0,
+            "items": [],
+            "facets": _facets(status),
+            "mode": mode,
+        }
 
     total = conn.execute(
         f"SELECT COUNT(*) AS c FROM assets a{join} WHERE {where_sql}", params
@@ -80,12 +205,56 @@ def search(
         [*params, limit, offset],
     ).fetchall()
 
+    row_dicts = [dict(r) for r in rows]
+    tags_map = _tags_by_asset_ids(conn, [r["id"] for r in row_dicts])
+
     return {
         "total": total,
-        "items": [_card(dict(r)) for r in rows],
+        "items": [_card(r, tags_map.get(r["id"], [])) for r in row_dicts],
         "facets": _facets(status),
         "mode": mode,
     }
+
+
+def query_export_assets(
+    *,
+    q: str = "",
+    media_type: Optional[str] = None,
+    tag: Optional[str] = None,
+    include_tags: Optional[Iterable[str] | str] = None,
+    exclude_tags: Optional[Iterable[str] | str] = None,
+    collection_id: Optional[int] = None,
+    status: str = "active",
+    sort: str = "newest",
+) -> list[dict]:
+    """Return all matching assets in the same order as search(), without pagination."""
+    conn = get_conn()
+    join, where_sql, params, order, is_empty = _build_query(
+        q=q,
+        media_type=media_type,
+        tag=tag,
+        include_tags=include_tags,
+        exclude_tags=exclude_tags,
+        collection_id=collection_id,
+        status=status,
+        sort=sort,
+    )
+    if is_empty:
+        return []
+
+    rows = conn.execute(
+        f"""SELECT a.* FROM assets a{join} WHERE {where_sql}
+            ORDER BY {order}""",
+        params,
+    ).fetchall()
+
+    row_dicts = [dict(r) for r in rows]
+    tags_map = _tags_by_asset_ids(conn, [r["id"] for r in row_dicts])
+    out = []
+    for r in row_dicts:
+        item = _card(r, tags_map.get(r["id"], []))
+        out.append(item)
+    return out
 
 
 def _semantic_search(q, media_type, status, limit, offset) -> dict:
@@ -152,12 +321,13 @@ def _facets(status: str) -> dict:
     }
 
 
-def _card(a: dict) -> dict:
+def _card(a: dict, tags: Optional[list[str]] = None) -> dict:
     """Compact asset representation for grid/list views."""
     return {
         "id": a["id"],
         "uuid": a["uuid"],
         "title": a["title"],
+        "description": a.get("description"),
         "filename": a["filename"],
         "media_type": a["media_type"],
         "mime_type": a["mime_type"],
@@ -168,4 +338,5 @@ def _card(a: dict) -> dict:
         "alt_text": a["alt_text"],
         "status": a["status"],
         "created_at": a["created_at"],
+        "tags": tags if tags is not None else [],
     }
