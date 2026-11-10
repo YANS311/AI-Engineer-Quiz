@@ -63,7 +63,50 @@ def _make_image(idx: int, label: str) -> bytes:
     return buf.getvalue()
 
 
-def run_seed() -> None:
+# Deterministic per-asset overrides: (idx, variant) -> (description, extra_tags, created_at)
+_SCENARIO_OVERRIDES: dict[tuple[int, int], tuple[str, list[str], str]] = {
+    # Environment & Survey collection: Harbor scenario test cases
+    (4, 0): (
+        'Harbor coastal survey photo — 港口航拍素材, 包含"一类航标"\n第二行备注：已审校',
+        ["approved", "campaign"],
+        "2026-07-10T12:00:00+00:00",
+    ),
+    (4, 1): (
+        "Harbor shoreline draft survey (internal working copy)",
+        ["approved", "campaign", "internal"],
+        "2026-07-11T12:00:00+00:00",
+    ),
+    (8, 0): (
+        "Harbor estuary and river watershed diagram, campaign edition",
+        ["approved", "campaign"],
+        "2026-07-10T12:00:00+00:00",  # deliberate timestamp tie with (4, 0)
+    ),
+    (8, 1): (
+        "Harbor watershed baseline chart (approved archive only)",
+        ["approved"],
+        "2026-07-09T12:00:00+00:00",
+    ),
+    (1, 0): (
+        'Harbor overlook and mountain trail map, "港口步道"与等高线图',
+        ["approved", "campaign"],
+        "2026-07-15T09:30:00+00:00",
+    ),
+    # Civic Communications collection: Harbor asset in a different collection
+    (3, 0): (
+        "Harbor ferry and public transit poster for summer campaign",
+        ["approved", "campaign"],
+        "2026-07-12T08:00:00+00:00",
+    ),
+    (3, 1): (
+        "Transit route map (internal draft)",
+        ["internal"],
+        "2026-07-08T08:00:00+00:00",
+    ),
+}
+
+
+def run_seed() -> dict:
+    random.seed(7)
     init_db()
     conn = get_conn()
     # ensure admin exists (startup hook normally does this, but seed runs standalone)
@@ -85,12 +128,30 @@ def run_seed() -> None:
 
     created = []
     print("Generating synthetic assets...")
+    seq_no = 0
     for i, (label, tags) in enumerate(_SUBJECTS):
         for variant in range(2):  # two variants each -> 24 assets
-            data = _make_image(i + variant, label)
+            seq_no += 1
+            data = _make_image(i * 2 + variant, f"{label} #{variant + 1}")
             asset = ingest.ingest_stream(io.BytesIO(data), f"{label.lower().replace(' ', '_')}_{variant+1}.jpg",
                                          user=admin, run_ai=True, title=label if variant == 0 else f"{label} (alt)")
-            for t in tags:
+            override = _SCENARIO_OVERRIDES.get((i, variant))
+            if override:
+                desc_text, extra_tags, ts = override
+            else:
+                desc_text = f"{label} catalog entry #{seq_no}"
+                extra_tags = ["approved"] if variant == 0 else (["internal"] if i % 3 == 0 else ["approved", "campaign"])
+                # Deliberate timestamp ties on 2026-07-10T12:00:00+00:00 for i in (0, 2) variant 0
+                if variant == 0 and i in (0, 2):
+                    ts = "2026-07-10T12:00:00+00:00"
+                else:
+                    ts = f"2026-07-{seq_no:02d}T10:00:00+00:00"
+
+            conn.execute(
+                "UPDATE assets SET description = ?, created_at = ?, updated_at = ? WHERE id = ?",
+                (desc_text, ts, ts, asset["id"]),
+            )
+            for t in [*tags, *extra_tags]:
                 conn.execute("INSERT OR IGNORE INTO tags (name) VALUES (?)", (t,))
                 tid = conn.execute("SELECT id FROM tags WHERE name=?", (t,)).fetchone()["id"]
                 conn.execute("INSERT OR IGNORE INTO asset_tags (asset_id, tag_id, source) VALUES (?,?, 'manual')",
@@ -106,10 +167,14 @@ def run_seed() -> None:
     for name, desc in [("Civic Communications", "Posters, banners, notices for public outreach"),
                        ("Environment & Survey", "Coastal, watershed, and terrain imagery"),
                        ("Heritage & Culture", "Buildings, libraries, and cultural assets")]:
-        cur = conn.execute(
-            "INSERT INTO collections (uuid, name, description, kind, created_by, created_at) VALUES (?,?,?, 'folder', ?, ?)",
-            (str(uuidlib.uuid4()), name, desc, admin["id"], now_iso()))
-        cols[name] = cur.lastrowid
+        existing_col = conn.execute("SELECT id FROM collections WHERE name = ?", (name,)).fetchone()
+        if existing_col:
+            cols[name] = existing_col["id"]
+        else:
+            cur = conn.execute(
+                "INSERT INTO collections (uuid, name, description, kind, created_by, created_at) VALUES (?,?,?, 'folder', ?, ?)",
+                (str(uuidlib.uuid4()), name, desc, admin["id"], now_iso()))
+            cols[name] = cur.lastrowid
     conn.commit()
     # distribute assets across collections by tag affinity
     for aid in created:
@@ -131,6 +196,7 @@ def run_seed() -> None:
 
     print(f"Seeded {len(created)} assets, {len(cols)} collections, and demo users.")
     print("Sign in as admin/admin (also: curator, contributor, viewer / demo1234).")
+    return {"assets": created, "collections": cols}
 
 
 if __name__ == "__main__":

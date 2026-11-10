@@ -98,7 +98,8 @@ def _build_query(
             cid = int(collection_id)
         except (TypeError, ValueError):
             return "", "1 = 0", [], order, True
-        join += " JOIN collection_assets ca ON ca.asset_id = a.id AND ca.collection_id = ?"
+        join += " JOIN collection_assets ca ON ca.asset_id = a.id"
+        where.append("ca.collection_id = ?")
         params.append(cid)
 
     if inc_tags:
