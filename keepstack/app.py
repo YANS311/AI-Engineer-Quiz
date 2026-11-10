@@ -173,21 +173,84 @@ async def upload_assets(
     return {"created": results}
 
 
+def _parse_collection_id(val: Optional[str]) -> Optional[int]:
+    if val is None or str(val).strip() == "":
+        return None
+    try:
+        return int(str(val).strip())
+    except ValueError as exc:
+        raise HTTPException(422, "Invalid collection_id") from exc
+
+
 @app.get("/api/assets")
 def list_assets(
     q: str = "",
     media_type: Optional[str] = None,
     tag: Optional[str] = None,
-    collection_id: Optional[int] = None,
+    include_tags: Optional[list[str]] = Query(None),
+    include_tag: Optional[list[str]] = Query(None),
+    exclude_tags: Optional[list[str]] = Query(None),
+    exclude_tag: Optional[list[str]] = Query(None),
+    collection_id: Optional[str] = None,
     status: str = "active",
     sort: str = "newest",
     mode: str = "keyword",
-    limit: int = Query(60, le=200),
-    offset: int = 0,
+    limit: int = Query(60, ge=1, le=200),
+    offset: int = Query(0, ge=0),
     user: dict = Depends(require_user),
 ):
-    return search.search(q=q, media_type=media_type, tag=tag, collection_id=collection_id,
-                         status=status, sort=sort, mode=mode, limit=limit, offset=offset)
+    cid = _parse_collection_id(collection_id)
+    inc = (include_tags or []) + (include_tag or [])
+    exc = (exclude_tags or []) + (exclude_tag or [])
+    return search.search(
+        q=q,
+        media_type=media_type,
+        tag=tag,
+        include_tags=inc,
+        exclude_tags=exc,
+        collection_id=cid,
+        status=status,
+        sort=sort,
+        mode=mode,
+        limit=limit,
+        offset=offset,
+    )
+
+
+@app.get("/api/assets/export")
+def export_assets_csv(
+    q: str = "",
+    media_type: Optional[str] = None,
+    tag: Optional[str] = None,
+    include_tags: Optional[list[str]] = Query(None),
+    include_tag: Optional[list[str]] = Query(None),
+    exclude_tags: Optional[list[str]] = Query(None),
+    exclude_tag: Optional[list[str]] = Query(None),
+    collection_id: Optional[str] = None,
+    status: str = "active",
+    sort: str = "newest",
+    user: dict = Depends(require_user),
+):
+    cid = _parse_collection_id(collection_id)
+    inc = (include_tags or []) + (include_tag or [])
+    exc = (exclude_tags or []) + (exclude_tag or [])
+    csv_text = search.export_csv(
+        q=q,
+        media_type=media_type,
+        tag=tag,
+        include_tags=inc,
+        exclude_tags=exc,
+        collection_id=cid,
+        status=status,
+        sort=sort,
+    )
+    return Response(
+        content=csv_text.encode("utf-8"),
+        media_type="text/csv; charset=utf-8",
+        headers={
+            "Content-Disposition": 'attachment; filename="assets_export.csv"',
+        },
+    )
 
 
 def _get_asset_or_404(uuid: str) -> dict:
@@ -315,6 +378,7 @@ def remove_tag(uuid: str, name: str, user: dict = Depends(require_role("contribu
             "DELETE FROM asset_tags WHERE asset_id = ? AND tag_id = "
             "(SELECT id FROM tags WHERE name = ?)", (a["id"], name.lower()))
     ingest.reindex_fts(a["id"])
+    ingest.reindex_embedding(a["id"])
     return {"ok": True}
 
 

@@ -11,6 +11,8 @@ drill-down sidebar.
 """
 from __future__ import annotations
 
+import csv
+import io
 from typing import Iterable, Optional
 
 from . import ai
@@ -255,6 +257,56 @@ def query_export_assets(
         item = _card(r, tags_map.get(r["id"], []))
         out.append(item)
     return out
+
+
+CSV_COLUMNS = [
+    "uuid",
+    "title",
+    "description",
+    "filename",
+    "media_type",
+    "tags",
+    "created_at",
+]
+
+
+def export_csv(
+    *,
+    q: str = "",
+    media_type: Optional[str] = None,
+    tag: Optional[str] = None,
+    include_tags: Optional[Iterable[str] | str] = None,
+    exclude_tags: Optional[Iterable[str] | str] = None,
+    collection_id: Optional[int] = None,
+    status: str = "active",
+    sort: str = "newest",
+) -> str:
+    """Format all matching assets as RFC 4180 CSV text (UTF-8)."""
+    items = query_export_assets(
+        q=q,
+        media_type=media_type,
+        tag=tag,
+        include_tags=include_tags,
+        exclude_tags=exclude_tags,
+        collection_id=collection_id,
+        status=status,
+        sort=sort,
+    )
+    buf = io.StringIO()
+    writer = csv.writer(buf, lineterminator="\r\n")
+    writer.writerow(CSV_COLUMNS)
+    for item in items:
+        tags_str = ",".join(item.get("tags") or [])
+        writer.writerow([
+            item.get("uuid") or "",
+            item.get("title") or "",
+            item.get("description") or "",
+            item.get("filename") or "",
+            item.get("media_type") or "",
+            tags_str,
+            item.get("created_at") or "",
+        ])
+    return buf.getvalue()
 
 
 def _semantic_search(q, media_type, status, limit, offset) -> dict:
