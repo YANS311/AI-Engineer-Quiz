@@ -57,8 +57,9 @@ python -m pytest -q
    - **有关键词时忽略排序选择（`keepstack/search.py`）**：原实现当 `q.strip()` 非空时强制使用 `ORDER BY bm25(asset_fts)` 覆盖用户所选排序。已修复为始终遵守所选排序。
    - **相同 `created_at` 分页不稳定（`keepstack/search.py`）**：原排序仅使用 `a.created_at DESC/ASC`，当多条记录时间戳相同时跨页顺序不确定。已增加唯一主键决胜列 `a.created_at DESC, a.id DESC` 与 `a.created_at ASC, a.id ASC`。
    - **纯特殊字符关键词导致 FTS5 语法错误（`keepstack/search.py`）**：当输入如 `!!!` 或 `"---"` 等仅含非字母数字字符的非空查询时，`_fts_query(q)` 返回空字符串 `""`，传入 `asset_fts MATCH ''` 会触发 `sqlite3.OperationalError: fts5: syntax error`。已修复为空白输入不限制关键词、无有效分词的非空白特殊字符输入安全返回空结果。
+   - **前端 `api()` JSON 请求缺失默认 `POST` 方法导致真实浏览器报错（`web/app.js`）**：上游 `api(path, opts)` 在传入 `{ json: ... }` 时仅设置了 `opts.body` 而未设置 `opts.method = opts.method || "POST"`，在真实浏览器中 `window.fetch()` 默认方法为 `GET`，会抛出 `TypeError: Failed to execute 'fetch' on 'Window': Request with GET/HEAD method cannot have body`，导致登录、添加标签、新建集合等请求失败。已补充 `opts.method = opts.method || "POST"`。
    - **详情抽屉增删标签后未刷新列表（`web/app.js`）**：原前端在添加或删除标签后仅刷新详情抽屉，未触发列表与筛选项更新。已在保存元数据及增删标签后同步刷新列表和筛选项。
-3. **新增自动化测试结果（`tests/test_search_export.py`）**：
+3. **自动化测试结果（`tests/test_search_export.py`，Python 3.12.10）**：
    - 新增 6 个综合测试函数，覆盖：
      - `test_seed_reproducible_and_business_scenario`：验证可复现 Seed 数据及 README `harbor` + 集合 + 包含/排除标签 + 升降序 + CSV 导出全流程；
      - `test_combined_filtering_semantics`：验证关键词、集合、多包含标签（AND）、多排除标签（OR 排除且保留无标签素材）、大小写不敏感、完整标签名匹配、重复标签去重、包含与排除同标签冲突返回空、空白与特殊字符输入、`media_type` 与 `active` 状态过滤；
@@ -66,7 +67,14 @@ python -m pytest -q
      - `test_csv_export_full_results_escaping_and_empty_header`：验证登录鉴权（未登录 401）、跨页全量导出一致性、0 条结果保留表头、中文/逗号/双引号/换行符 RFC 4180 转义；
      - `test_updates_to_title_description_and_tags_reflect_in_search_and_export`：验证通过 `PATCH /api/assets/{uuid}`、`POST /api/assets/{uuid}/tags`、`DELETE /api/assets/{uuid}/tags/{name}` 修改后，下一次搜索与 CSV 导出立即反映最新值；
      - `test_multipage_seed_pagination_matches_csv_export_and_query_formats`：验证 Seed 数据集多页拼接结果与 CSV 导出完全一致。
-   - 最终执行 `pytest -q`：**`28 passed, 2 skipped`**，全部通过。
+   - 在 Python 3.12.10 下执行 `py -3.12 -m pytest -v`：**`28 passed, 2 skipped`**，全部通过。
+4. **真实浏览器（Google Chrome）端到端实测结果**：
+   - 启动真实 Uvicorn 服务并通过 Chrome DevTools Protocol 驱动本机 Google Chrome 执行完整页面交互：
+     - **登录与初始分页**：使用 `admin`/`admin` 登录，`#search-mode` 已隐藏，默认展示 `Library (24)`，`Page 1 of 2`（每页 12 条）；点击 `Next` 翻至 `Page 2 of 2`，第 1 页与第 2 页共 24 个 UUID 互不重复。
+     - **README `harbor` 业务场景**：选择集合 `Environment & Survey`，添加包含标签 `approved`、`campaign`，添加排除标签 `internal`，输入关键词 `harbor`；生效条件区渲染 5 个筛选 Chip，列表返回 `Matching Results (3)`：降序为 `["Mountain trail map", "River watershed diagram", "Coastal survey photo"]`，切换 `Oldest first` 升序为严格逆序 `["Coastal survey photo", "River watershed diagram", "Mountain trail map"]`。
+     - **浏览器真实 CSV 下载**：点击 `#btn-export-csv` 触发浏览器下载 `assets_export.csv`，文件内容与当前筛选排序一致（3 条记录），且完整保留中文、逗号、双引号及换行（`Harbor coastal survey photo — 港口航拍素材, 包含"一类航标"\n第二行备注：已审校`）。
+     - **修改标题与标签后刷新及重导出**：在详情抽屉中新增标签 `verified` 并将标题修改为 `Coastal survey photo (Harbor Revised)` 保存后，背景卡片列表立即刷新，再次点击 `#btn-export-csv` 下载的 CSV 首行标题与 `tags` 列均已更新。
+     - **快速切换条件竞态与一键清除**：连续快速触发 `newest -> oldest -> newest` 切换后最终 DOM 稳定保持 `newest` 顺序；点击 `Clear all` 后所有筛选 Chip 清空，列表恢复 `Library (24)`、`Page 1 of 2`。
 
 ---
 
