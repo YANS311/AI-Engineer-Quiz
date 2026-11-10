@@ -31,7 +31,7 @@
       </div>
       <div class="search-box">
         <input id="search" placeholder="Search assets, tags, metadata...">
-        <select id="search-mode" title="Search mode">
+        <select id="search-mode" class="hidden" title="Search mode">
           <option value="keyword">Keyword</option>
           <option value="semantic">Semantic</option>
         </select>
@@ -57,11 +57,11 @@
 
         <div id="facets" class="facets">
           <div class="facet-group">
-            <h4>Media type</h4>
+            <h4>Media type <span class="facet-note">(catalog total)</span></h4>
             <ul id="facet-media"></ul>
           </div>
           <div class="facet-group">
-            <h4>Top tags</h4>
+            <h4>Top tags <span class="facet-note">(catalog total)</span></h4>
             <ul id="facet-tags"></ul>
           </div>
         </div>
@@ -72,17 +72,76 @@
           <div class="view-head">
             <h2 id="result-title">Library</h2>
             <div class="view-controls">
-              <span id="active-filter" class="chip hidden"></span>
-              <select id="sort">
-                <option value="newest">Newest</option>
-                <option value="oldest">Oldest</option>
-                <option value="name">Name</option>
-                <option value="largest">Largest</option>
-              </select>
+              <label class="control-label">Sort
+                <select id="sort">
+                  <option value="newest">Created: Newest first</option>
+                  <option value="oldest">Created: Oldest first</option>
+                  <option value="name">Name</option>
+                  <option value="largest">Largest</option>
+                </select>
+              </label>
+              <button id="btn-export-csv" class="btn">Export CSV</button>
             </div>
           </div>
+
+          <div class="filter-bar">
+            <div class="filter-field">
+              <label for="filter-collection">Collection</label>
+              <select id="filter-collection">
+                <option value="">All collections</option>
+              </select>
+            </div>
+            <div class="filter-field">
+              <label for="filter-media">Media type</label>
+              <select id="filter-media">
+                <option value="">All types</option>
+                <option value="image">image</option>
+                <option value="video">video</option>
+                <option value="audio">audio</option>
+                <option value="document">document</option>
+                <option value="other">other</option>
+              </select>
+            </div>
+            <div class="filter-field">
+              <label for="include-tag-input">Include tags (all required)</label>
+              <div class="tag-picker">
+                <select id="include-tag-select" title="Pick a tag to include">
+                  <option value="">+ Pick tag...</option>
+                </select>
+                <input id="include-tag-input" list="all-tags-datalist" placeholder="Type tag & Enter">
+                <button id="btn-add-include-tag" type="button" class="btn btn-sm">+ Include</button>
+              </div>
+            </div>
+            <div class="filter-field">
+              <label for="exclude-tag-input">Exclude tags (any excluded)</label>
+              <div class="tag-picker">
+                <select id="exclude-tag-select" title="Pick a tag to exclude">
+                  <option value="">- Pick tag...</option>
+                </select>
+                <input id="exclude-tag-input" list="all-tags-datalist" placeholder="Type tag & Enter">
+                <button id="btn-add-exclude-tag" type="button" class="btn btn-sm">- Exclude</button>
+              </div>
+            </div>
+            <datalist id="all-tags-datalist"></datalist>
+          </div>
+
+          <div id="active-filters" class="active-filters hidden">
+            <span class="active-filters-label">Active filters:</span>
+            <div id="active-filter-chips" class="chip-list"></div>
+            <button id="btn-clear-filters" type="button" class="btn btn-ghost btn-sm">Clear all</button>
+          </div>
+
           <div id="grid" class="grid"></div>
           <div id="empty" class="empty hidden">No assets yet. Click Upload to get started.</div>
+
+          <div id="pagination" class="pagination">
+            <span id="page-total" class="muted">Total: 0</span>
+            <div class="page-controls">
+              <button id="btn-prev" type="button" class="btn" disabled>Previous</button>
+              <span id="page-info" class="page-info">Page 1 of 1</span>
+              <button id="btn-next" type="button" class="btn" disabled>Next</button>
+            </div>
+          </div>
         </div>
 
         <div id="view-collections" class="view hidden">
